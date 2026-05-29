@@ -81,12 +81,14 @@ def get_model(task_type: str) -> str:
 
 
 # ── PII 마스킹 ─────────────────────────────────────────────────────
+# 주의: 더 구체적인(긴) 패턴을 먼저 두어야 합니다.
+# 계좌번호 패턴이 카드번호·전화번호를 부분 매칭하므로 그보다 앞에 배치합니다.
 PII_PATTERNS = {
     "주민등록번호":    r"\d{6}-[1-4]\d{6}",
     "외국인등록번호":  r"\d{6}-[5-8]\d{6}",
+    "카드번호":       r"\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}",
     "전화번호":       r"0[1789]\d{1,2}-\d{3,4}-\d{4}",
     "계좌번호":       r"\d{3,4}-\d{2,6}-\d{4,6}(?:-\d{2,3})?",
-    "카드번호":       r"\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}",
     "이메일":         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
 }
 
@@ -104,7 +106,7 @@ def mask_pii(text: str) -> tuple[str, dict[str, list]]:
         matches = re.findall(pattern, text)
         if matches:
             found[pii_type] = matches
-            masked = re.sub(pattern, f"[{pii_type}_MASKED]", masked)
+            masked = re.sub(pattern, f"[{pii_type}_마스킹]", masked)
     return masked, found
 
 
