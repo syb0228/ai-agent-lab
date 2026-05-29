@@ -54,8 +54,8 @@ def get_openai_client():
 
 # ── 모델 상수 ──────────────────────────────────────────────────────
 MODELS = {
-    "opus":   "claude-opus-4-5",           # 높은 정확도 (여신심사)
-    "sonnet": "claude-sonnet-4-6",         # 균형 (투자 리서치)
+    "opus":   "gpt-4o",                    # 높은 정확도 (여신심사) — OpenAI 랩에서 사용
+    "sonnet": "gpt-4o",                    # 균형 (투자 리서치) — OpenAI 랩에서 사용
     "haiku":  "gpt-4o-mini",               # 빠름 / 저비용 (FDS, FAQ) — OpenAI 랩에서 사용
     "gpt-5.4":       "gpt-5.4",            # 높은 정확도 (여신심사)
     "gpt-5.4-mini":  "gpt-5.4-mini",       # 균형 (투자 리서치)
