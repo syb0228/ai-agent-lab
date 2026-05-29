@@ -27,7 +27,7 @@ from common.openai_compat import (
     create_chat_completion,
     finish_reason,
 )
-from common.utils import Printer, get_logger, get_openai_client
+from common.utils import Printer, get_logger, get_openai_client, now_kst_str
 
 logger = get_logger(__name__)
 P = Printer()
@@ -64,6 +64,7 @@ MOCK_DOCUMENTS = {
             "area_sqm": 84.5,
             "appraisal_value": 500_000_000,
             "appraiser": "한국감정원",
+            "zone": "비규제지역",
         },
     },
     "LOAN-2025-002": {
@@ -88,6 +89,35 @@ MOCK_DOCUMENTS = {
             "doc_type": "근로소득원천징수영수증",
         },
         "property_doc": None,
+    },
+    "LOAN-2025-003": {
+        "application": {
+            "applicant_name": "이철수",
+            "birth_date": "1982-11-03",
+            "loan_amount": 400_000_000,
+            "loan_purpose": "주택구입",
+            "application_date": "2025-05-03",
+        },
+        "id_card": {
+            "name": "이철수",
+            "birth": "1982-11-03",
+            "expiry": "2029-12-31",
+            "type": "주민등록증",
+        },
+        "income_proof": {
+            "annual_income": 55_000_000,
+            "employer": "(주)DEF테크",
+            "position": "차장",
+            "employed_years": 7,
+            "doc_type": "근로소득원천징수영수증",
+        },
+        "property_doc": {
+            "address": "서울시 송파구 잠실동 100",
+            "area_sqm": 76.0,
+            "appraisal_value": 600_000_000,
+            "appraiser": "한국감정원",
+            "zone": "규제지역",
+        },
     },
 }
 
@@ -115,6 +145,12 @@ REGULATIONS = {
         "limit": 50.0,
         "unit": "%",
         "basis": "부동산 규제지역 금융규제",
+    },
+    "LTV-003": {
+        "name": "LTV 한도 (투기과열지구)",
+        "limit": 40.0,
+        "unit": "%",
+        "basis": "투기과열지구 부동산 금융규제",
     },
     "AGE-001": {
         "name": "최소 신청 연령",
@@ -195,7 +231,7 @@ def extract_document_info(case_id: str, doc_type: str, fields: list[str]) -> dic
             result[field] = value
 
     if missing:
-        result["누락_필드"] = missing
+        result["⚠_누락_필드"] = missing
 
     return result
 
@@ -249,6 +285,14 @@ def check_regulation_compliance(rule_code: str, check_value: float) -> dict:
     return result
 
 
+# 지역(zone) -> (LTV 규정 코드, 한도%)
+LTV_ZONE_RULES = {
+    "비규제지역": ("LTV-001", 70.0),
+    "규제지역": ("LTV-002", 50.0),
+    "투기과열지구": ("LTV-003", 40.0),
+}
+
+
 def calculate_dti_ltv(
     annual_income: float,
     existing_monthly_debt: float,
@@ -256,8 +300,9 @@ def calculate_dti_ltv(
     property_value: float = 0,
     annual_rate: float = 4.5,
     loan_months: int = 240,
+    zone: str = "비규제지역",
 ) -> dict:
-    """DTI와 LTV를 계산한다."""
+    """DTI와 LTV를 계산한다. zone에 따라 LTV 기준을 다르게 적용한다."""
     if annual_income <= 0:
         return {"error": "연소득은 0보다 커야 합니다"}
 
@@ -281,11 +326,14 @@ def calculate_dti_ltv(
 
     if property_value > 0:
         ltv = loan_amount / property_value * 100
+        ltv_code, ltv_limit = LTV_ZONE_RULES.get(zone, LTV_ZONE_RULES["비규제지역"])
         result.update(
             {
                 "LTV": f"{round(ltv, 2)}%",
-                "LTV_기준": "70% 이하 (비규제지역)",
-                "LTV_통과": ltv <= 70.0,
+                "LTV_지역": zone,
+                "LTV_규정코드": ltv_code,
+                "LTV_기준": f"{ltv_limit}% 이하 ({zone})",
+                "LTV_통과": ltv <= ltv_limit,
                 "담보_평가액": f"{round(property_value):,}원",
             }
         )
@@ -352,6 +400,11 @@ REVIEW_TOOLS = [
                 "property_value": {"type": "number", "description": "담보물 감정가(원). 신용대출이면 0"},
                 "annual_rate": {"type": "number", "description": "연이율(%). 기본값 4.5"},
                 "loan_months": {"type": "integer", "description": "대출 기간(개월). 기본값 240"},
+                "zone": {
+                    "type": "string",
+                    "enum": ["비규제지역", "규제지역", "투기과열지구"],
+                    "description": "담보물 소재 지역 규제 구분. property_doc의 zone 값을 그대로 전달. LTV 기준이 달라짐(비규제 70%/규제 50%/투기과열 40%)",
+                },
             },
             "required": ["annual_income", "existing_monthly_debt", "loan_amount"],
         },
@@ -370,9 +423,16 @@ REVIEW_SYSTEM_PROMPT = """당신은 금융회사 여신심사 보조 AI입니다
 1. extract_document_info(doc_type="application")로 신청서 기본 정보 추출
 2. extract_document_info(doc_type="id_card")로 신분증 정보 추출
 3. extract_document_info(doc_type="income_proof")로 소득 증빙 확인
-4. extract_document_info(doc_type="property_doc")로 담보물 정보 확인
-5. calculate_dti_ltv로 DTI, LTV 계산
+4. extract_document_info(doc_type="property_doc")로 담보물 정보 확인 (zone 필드 포함)
+5. calculate_dti_ltv로 DTI, LTV 계산 — property_doc의 zone 값을 zone 인자로 반드시 전달
 6. check_regulation_compliance로 각 규정 준수 여부 확인
+
+[지역(zone)별 LTV 규정 선택]
+담보물 property_doc의 zone 값에 따라 LTV 규정 코드를 다르게 적용하세요.
+- zone == "비규제지역": LTV-001 (70% 이하)
+- zone == "규제지역": LTV-002 (50% 이하)
+- zone == "투기과열지구": LTV-003 (40% 이하)
+calculate_dti_ltv 호출 시 zone을 전달하고, check_regulation_compliance에는 위 표의 해당 LTV 코드를 사용하세요.
 
 [출력 형식]
 최종 답변은 아래 형식으로 작성하세요.
@@ -403,22 +463,44 @@ REVIEW_SYSTEM_PROMPT = """당신은 금융회사 여신심사 보조 AI입니다
 # SECTION 5: Tool 디스패치 및 에이전트 실행
 # ──────────────────────────────────────────────────────────────────
 
+# Tool 호출 감사 로그 (금융권 실무: 호출 이력 추적)
+audit_log: list[dict] = []
+
+
+def _record_audit(started_at: str, name: str, inputs: dict, result: dict) -> None:
+    """Tool 호출 1건을 감사 로그에 기록한다."""
+    audit_log.append(
+        {
+            "time": started_at,
+            "tool": name,
+            "input_keys": list(inputs.keys()),
+            "case_id": inputs.get("case_id"),
+            "success": isinstance(result, dict) and "error" not in result,
+        }
+    )
+
+
 def execute_review_tool(name: str, inputs: dict) -> dict:
     """여신심사 Tool 디스패치"""
+    started_at = now_kst_str()
     logger.info(f"Tool: {name} | 입력: {list(inputs.keys())}")
     try:
         if name == "extract_document_info":
-            return extract_document_info(**inputs)
-        if name == "check_regulation_compliance":
-            return check_regulation_compliance(**inputs)
-        if name == "calculate_dti_ltv":
-            return calculate_dti_ltv(**inputs)
-        return {"error": f"알 수 없는 Tool: {name}"}
+            result = extract_document_info(**inputs)
+        elif name == "check_regulation_compliance":
+            result = check_regulation_compliance(**inputs)
+        elif name == "calculate_dti_ltv":
+            result = calculate_dti_ltv(**inputs)
+        else:
+            result = {"error": f"알 수 없는 Tool: {name}"}
     except TypeError as exc:
-        return {"error": f"입력 형식 오류: {exc}"}
+        result = {"error": f"입력 형식 오류: {exc}"}
     except Exception as exc:
         logger.error(f"Tool 오류 [{name}]: {exc}")
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        result = {"error": f"{type(exc).__name__}: {exc}"}
+
+    _record_audit(started_at, name, inputs, result)
+    return result
 
 
 def run_loan_review_agent(case_id: str, max_turns: int = 12) -> str:
