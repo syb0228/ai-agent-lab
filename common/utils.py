@@ -56,7 +56,7 @@ def get_openai_client():
 MODELS = {
     "opus":   "claude-opus-4-5",           # 높은 정확도 (여신심사)
     "sonnet": "claude-sonnet-4-6",         # 균형 (투자 리서치)
-    "haiku":  "claude-haiku-4-5-20251001", # 빠름 / 저비용 (FDS, FAQ)
+    "haiku":  "gpt-4o-mini",               # 빠름 / 저비용 (FDS, FAQ) — OpenAI 랩에서 사용
     "gpt-5.4":       "gpt-5.4",            # 높은 정확도 (여신심사)
     "gpt-5.4-mini":  "gpt-5.4-mini",       # 균형 (투자 리서치)
     "gpt-5.4-nano":  "gpt-5.4-nano",       # 빠름 / 저비용 (FDS, FAQ)
@@ -88,6 +88,7 @@ PII_PATTERNS = {
     "외국인등록번호":  r"\d{6}-[5-8]\d{6}",
     "카드번호":       r"\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}",
     "전화번호":       r"0[1789]\d{1,2}-\d{3,4}-\d{4}",
+    "사업자등록번호":  r"\d{3}-\d{2}-\d{5}",
     "계좌번호":       r"\d{3,4}-\d{2,6}-\d{4,6}(?:-\d{2,3})?",
     "이메일":         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
 }
@@ -111,17 +112,16 @@ def mask_pii(text: str) -> tuple[str, dict[str, list]]:
 
 
 # ── Prompt Injection 탐지 ──────────────────────────────────────────
+# (정규식 패턴, 라벨 코드) 목록 — 매칭 시 라벨 코드를 반환한다.
 INJECTION_PATTERNS = [
-    r"이전.{0,10}(지시|명령|설정|프롬프트).{0,10}무시",
-    r"당신은.{0,5}(이제|지금).{0,5}(다른|새로운|변경된).{0,10}역할",
-    r"시스템.{0,5}(업데이트|변경|모드|프롬프트)",
-    r"모든.{0,5}(고객|계좌|데이터).{0,5}(출력|보여|알려)",
-    r"ignore.{0,10}(previous|prior|above).{0,10}(instruction|rule|prompt)",
-    r"you are now",
-    r"forget.{0,10}(everything|all|previous)",
-    r"jailbreak",
-    r"dan mode",
-    r"developer mode",
+    (r"이전.{0,20}(지시|명령|규칙).{0,20}(무시|삭제|잊어)", "KR_IGNORE_PREVIOUS"),
+    (r"시스템.{0,20}(프롬프트|prompt).{0,20}(무시|출력|공개)", "KR_SYSTEM_PROMPT"),
+    (r"당신은.{0,10}이제.{0,30}(다른|새로운).{0,10}(역할|AI|도구)", "KR_ROLE_CHANGE"),
+    (r"모든.{0,15}(고객|계좌|데이터).{0,15}(출력|공개|보여)", "KR_DATA_EXFILTRATION"),
+    (r"보안.{0,10}(정책|규칙).{0,10}(우회|무시)", "KR_SECURITY_BYPASS"),
+    (r"ignore.{0,30}(previous|all).{0,30}instructions?", "EN_IGNORE_PREVIOUS"),
+    (r"you are now.{0,40}(different|without restrictions)", "EN_ROLE_CHANGE"),
+    (r"(jailbreak|dan mode|developer mode)", "EN_JAILBREAK"),
 ]
 
 
@@ -130,12 +130,12 @@ def detect_prompt_injection(user_input: str) -> tuple[bool, str]:
     Prompt Injection 시도를 탐지합니다.
 
     Returns:
-        tuple: (탐지 여부, 탐지된 패턴)
+        tuple: (탐지 여부, 탐지된 패턴 라벨 코드)
     """
     lower = user_input.lower()
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, lower):
-            return True, pattern
+    for pattern, label in INJECTION_PATTERNS:
+        if re.search(pattern, lower, flags=re.IGNORECASE):
+            return True, label
     return False, ""
 
 

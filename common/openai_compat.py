@@ -5,13 +5,12 @@ OpenAI Chat Completions API 호출을 감싸는 얇은 호환 헬퍼.
 
 목적:
   - system 프롬프트를 messages 앞에 자동으로 합쳐준다.
-  - 응답 객체에서 자주 쓰는 값(finish_reason, 본문 텍스트)을 꺼내는
-    접근을 한 곳으로 모은다.
+  - 응답 객체에서 자주 쓰는 값(finish_reason, 본문 텍스트, 토큰 수)을
+    꺼내는 접근을 한 곳으로 모은다.
+  - Anthropic 형식 tools(input_schema)를 OpenAI 형식(parameters)으로 변환한다.
   - tool_calls 가 포함된 assistant 메시지를 다음 턴 messages 에 다시
     넣을 수 있는 dict 형태로 변환한다.
 """
-
-from typing import Any, Optional
 
 
 def _to_openai_tool(tool: dict) -> dict:
@@ -29,47 +28,30 @@ def _to_openai_tool(tool: dict) -> dict:
     }
 
 
-def create_chat_completion(
-    client: Any,
-    model: str,
-    messages: list[dict],
-    system: Optional[str] = None,
-    tools: Optional[list] = None,
-    max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None,
-):
-    """Chat Completions 호출. system 이 있으면 messages 앞에 붙인다."""
-    final_messages: list[dict] = []
-    if system:
-        final_messages.append({"role": "system", "content": system})
-    final_messages.extend(messages)
-
-    params: dict[str, Any] = {
+def create_chat_completion(client, model, max_tokens, system, messages, temperature=0.2, tools=None):
+    kwargs = {
         "model": model,
-        "messages": final_messages,
+        "messages": [{"role": "system", "content": system}] + messages,
+        "temperature": temperature,
     }
     if tools:
-        params["tools"] = [_to_openai_tool(t) for t in tools]
-        params["tool_choice"] = "auto"
-    if max_tokens is not None:
-        params["max_tokens"] = max_tokens
-    if temperature is not None:
-        params["temperature"] = temperature
-
-    return client.chat.completions.create(**params)
+        # Anthropic 형식(input_schema)이 섞여 있어도 OpenAI 형식으로 변환한다.
+        kwargs["tools"] = [_to_openai_tool(t) for t in tools]
+    return client.chat.completions.create(**kwargs)
 
 
-def finish_reason(response: Any) -> str:
-    """응답의 종료 사유(stop, tool_calls 등)를 반환한다."""
+def finish_reason(response):
     return response.choices[0].finish_reason
 
 
-def completion_text(response: Any) -> str:
-    """응답의 본문 텍스트를 반환한다(없으면 빈 문자열)."""
-    return response.choices[0].message.content or ""
+def completion_text(response):
+    try:
+        return response.choices[0].message.content or ""
+    except Exception:
+        return ""
 
 
-def assistant_message_with_tool_calls(message: Any) -> dict:
+def assistant_message_with_tool_calls(message) -> dict:
     """tool_calls 가 포함된 assistant 메시지를 messages 용 dict 로 변환한다."""
     return {
         "role": "assistant",
@@ -86,3 +68,13 @@ def assistant_message_with_tool_calls(message: Any) -> dict:
             for tool_call in (message.tool_calls or [])
         ],
     }
+
+
+def prompt_tokens(response):
+    usage = getattr(response, "usage", None)
+    return getattr(usage, "prompt_tokens", 0) if usage else 0
+
+
+def completion_tokens(response):
+    usage = getattr(response, "usage", None)
+    return getattr(usage, "completion_tokens", 0) if usage else 0
